@@ -9,12 +9,12 @@ import shutil
 import datetime
 import logging
 from typing import Dict, List, Optional, Tuple, Union
+import re
 
 # Rich for beautiful CLI
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
-from rich.layout import Layout
 from rich.table import Table
 from rich import print as rprint
 from rich.markdown import Markdown
@@ -26,22 +26,24 @@ from dotenv import load_dotenv
 # Initialize console
 console = Console()
 
-# Set up logging
-LOG_FILE = Path.home() / ".smart_organizer" / "operation_log.jsonl"
-LOG_FILE.parent.mkdir(exist_ok=True)
+# Set up directories and constants
+CONFIG_DIR = Path.home() / ".smart_organizer"
+CONFIG_DIR.mkdir(exist_ok=True)
+CONFIG_PATH = CONFIG_DIR / "config.json"
+DIRECTORY_REGISTRY_PATH = CONFIG_DIR / "directories.json"
+LOG_FILE = CONFIG_DIR / "operation_log.jsonl"
+
+# Configure logging
 logging.basicConfig(
-    filename=LOG_FILE.with_suffix(".log"),
+    filename=CONFIG_DIR / "smart_organizer.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Constants
-CONFIG_DIR = Path.home() / ".smart_organizer"
-CONFIG_PATH = CONFIG_DIR / "config.json"
-DIRECTORY_REGISTRY_PATH = CONFIG_DIR / "directories.json"
+# Default configuration
 DEFAULT_CONFIG = {
     "max_preview_lines": 10,
-    "max_directores_to_show": 10,
+    "max_directories_to_show": 10,
     "min_confidence_threshold": 0.7,
     "default_base_dir": str(Path.home() / "Documents"),
     "ai_model": "gpt-4o",
@@ -49,9 +51,6 @@ DEFAULT_CONFIG = {
     "default_directory_pattern": "{year}-{month}-{category}_{purpose}",
     "default_filename_pattern": "{year}-{month}-{category}_{descriptor}_{context}",
 }
-
-# Create config directory if it doesn't exist
-CONFIG_DIR.mkdir(exist_ok=True)
 
 
 class SmartOrganizer:
@@ -61,8 +60,8 @@ class SmartOrganizer:
         self._ensure_directory_registry()
         self._setup_ai_client()
         self.operation_log = []
-        self.batch_queue = []  # Queue for batch processing
-
+        self.batch_queue = []
+        
     def _load_config(self) -> Dict:
         """Load configuration or create default if not exists."""
         if not CONFIG_PATH.exists():
@@ -142,6 +141,16 @@ class SmartOrganizer:
     def _setup_ai_client(self):
         """Set up the OpenAI client."""
         load_dotenv()
+        api_key = os.getenv("OPENAI_API_KEY")
+        
+        if not api_key:
+            console.print(Panel(
+                "[red]Error: OPENAI_API_KEY not found in environment or .env file.[/]\n"
+                "Please set your OpenAI API key to use the AI features.",
+                title="API Key Error"
+            ))
+            sys.exit(1)
+            
         try:
             self.client = OpenAI()
             self.model = self.config["ai_model"]
@@ -157,7 +166,7 @@ class SmartOrganizer:
         """Get completion from the AI model."""
         try:
             if messages is None:
-                messages = [{"role": "system", "content": prompt.format(**kwargs)}]
+                messages = [{"role": "system", "content": prompt}]
                 
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -178,249 +187,35 @@ class SmartOrganizer:
             "operation_type": operation_type,
             "timestamp": datetime.datetime.now().isoformat()
         })
-        
-    def _get_batch_ai_completions(self):
-        """Process all queued batch requests at once."""
-        if not self.batch_queue:
-            console.print("[yellow]Batch queue is empty. Nothing to process.[/]")
-            return
-            
-        console.print(f"[cyan]Processing {len(self.batch_queue)} batch requests...[/]")
-        
-        # Group requests by operation type
-        filename_requests = []
-        dirname_requests = []
-        
-        for request in self.batch_queue:
-            if request["operation_type"] == "filename":
-                filename_requests.append(request)
-            elif request["operation_type"] == "dirname":
-                dirname_requests.append(request)
-        
-        # Process filename requests
-        if filename_requests:
-            self._batch_process_filenames(filename_requests)
-            
-        # Process dirname requests
-        if dirname_requests:
-            self._batch_process_dirnames(dirname_requests)
-            
-        # Clear the queue after processing
-        self.batch_queue = []
-        
-    def _batch_process_filenames(self, requests):
-        """Process a batch of filename standardization requests."""
-        # Create a batch prompt with all requests
-        year_month = datetime.datetime.now().strftime("%Y-%m")
-        
-        batch_prompt = f"""Given multiple files and descriptions, generate standardized filenames for each.
-Format: {self.config["default_filename_pattern"]}
-
-Where:
-- {{year}}-{{month}} should be the current date ({year_month}) unless a specific date is mentioned
-- {{category}} is a single word representing the domain (e.g., finance, research, project)
-- {{descriptor}} is 2-3 words joined by hyphens that capture the main topic
-- {{context}} is 1-2 key identifying words
-
-Files to process:
-"""
-
-        # Add each file to the prompt
-        for i, request in enumerate(requests, 1):
-            batch_prompt += f"\nFILE {i}:\nOriginal: {request['file_path'].name}\nDescription: {request['description']}\n"
-            
-        batch_prompt += "\nReturn results in the following format for each file:\nFILE 1: standardized-filename\nFILE 2: standardized-filename\n...\n"
+    
+    def _extract_file_metadata(self, file_path: Path) -> Dict:
+        """Extract metadata from a file."""
+        if not file_path.exists():
+            return {"error": "File not found"}
         
         try:
-            response = self._get_ai_completion(batch_prompt)
-            
-            # Parse the results
-            results = {}
-            current_file = None
-            
-            for line in response.splitlines():
-                line = line.strip()
-                if line.startswith("FILE "):
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        file_num = parts[0].replace("FILE ", "").strip()
-                        if file_num.isdigit():
-                            file_num = int(file_num)
-                            if 1 <= file_num <= len(requests):
-                                current_file = file_num
-                                results[current_file] = parts[1].strip()
-            
-            # Display results and confirm actions
-            console.print("\n[bold cyan]Batch Processing Results:[/]")
-            table = Table(title="Filename Suggestions")
-            table.add_column("#", style="cyan")
-            table.add_column("Original", style="blue")
-            table.add_column("Suggested", style="green")
-            
-            for i, request in enumerate(requests, 1):
-                suggested_name = results.get(i, "")
-                
-                if suggested_name and request["file_path"].suffix and not suggested_name.endswith(request["file_path"].suffix):
-                    suggested_name += request["file_path"].suffix
-                    
-                table.add_row(str(i), request["file_path"].name, suggested_name)
-                
-            console.print(table)
-            
-            # Ask which suggestions to apply
-            selected = Prompt.ask(
-                "\n[bold yellow]Enter the numbers of suggestions to apply (comma-separated, or 'all')[/]",
-                default="all"
-            )
-            
-            indices_to_apply = []
-            if selected.lower() == "all":
-                indices_to_apply = list(range(1, len(requests) + 1))
-            else:
-                for part in selected.split(","):
-                    part = part.strip()
-                    if part.isdigit():
-                        idx = int(part)
-                        if 1 <= idx <= len(requests):
-                            indices_to_apply.append(idx)
-            
-            # Apply the selected suggestions
-            for idx in indices_to_apply:
-                i = idx - 1  # Convert to 0-based index
-                request = requests[i]
-                suggested_name = results.get(idx, "")
-                
-                if not suggested_name:
-                    console.print(f"[yellow]No valid suggestion for file #{idx}. Skipping.[/]")
-                    continue
-                    
-                # Add file extension if missing
-                if request["file_path"].suffix and not suggested_name.endswith(request["file_path"].suffix):
-                    suggested_name += request["file_path"].suffix
-                
-                # Rename the file
-                try:
-                    new_path = request["file_path"].with_name(suggested_name)
-                    request["file_path"].rename(new_path)
-                    console.print(f"[green]Renamed: {request['file_path'].name} → {suggested_name}[/]")
-                    
-                    self._log_operation("rename_file", {
-                        "original_path": str(request["file_path"]),
-                        "original_name": request["file_path"].name,
-                        "new_name": suggested_name,
-                        "new_path": str(new_path),
-                        "description": request["description"],
-                    })
-                except Exception as e:
-                    console.print(f"[red]Error renaming file #{idx}: {e}[/]")
-            
+            return {
+                "name": file_path.name,
+                "extension": file_path.suffix,
+                "size_bytes": file_path.stat().st_size,
+                "size_human": self._format_size(file_path.stat().st_size),
+                "modified": datetime.datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
+                "created": datetime.datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
+            }
         except Exception as e:
-            console.print(f"[red]Error in batch processing: {e}[/]")
-            
-    def _batch_process_dirnames(self, requests):
-        """Process a batch of directory name standardization requests."""
-        # Create a batch prompt with all requests
-        year_month = datetime.datetime.now().strftime("%Y-%m")
-        
-        batch_prompt = f"""Given multiple directories and descriptions, generate standardized directory names for each.
-Format: {self.config["default_directory_pattern"]}
+            logging.error(f"Error extracting metadata for {file_path}: {e}")
+            return {
+                "name": file_path.name,
+                "error": f"Error accessing file: {e}"
+            }
 
-Where:
-- {{year}}-{{month}} should be the current date ({year_month})
-- {{category}} is a single word representing the project or domain
-- {{purpose}} is a concise description of the directory's purpose
-
-Directories to process:
-"""
-
-        # Add each directory to the prompt
-        for i, request in enumerate(requests, 1):
-            batch_prompt += f"\nDIR {i}:\nOriginal: {request['file_path'].name}\nDescription: {request['description']}\n"
-            
-        batch_prompt += "\nReturn results in the following format for each directory:\nDIR 1: standardized-dirname\nDIR 2: standardized-dirname\n...\n"
-        
-        try:
-            response = self._get_ai_completion(batch_prompt)
-            
-            # Parse the results
-            results = {}
-            current_dir = None
-            
-            for line in response.splitlines():
-                line = line.strip()
-                if line.startswith("DIR "):
-                    parts = line.split(":", 1)
-                    if len(parts) == 2:
-                        dir_num = parts[0].replace("DIR ", "").strip()
-                        if dir_num.isdigit():
-                            dir_num = int(dir_num)
-                            if 1 <= dir_num <= len(requests):
-                                current_dir = dir_num
-                                results[current_dir] = parts[1].strip()
-            
-            # Display results and confirm actions
-            console.print("\n[bold cyan]Batch Processing Results:[/]")
-            table = Table(title="Directory Name Suggestions")
-            table.add_column("#", style="cyan")
-            table.add_column("Original", style="blue")
-            table.add_column("Suggested", style="green")
-            
-            for i, request in enumerate(requests, 1):
-                suggested_name = results.get(i, "")
-                table.add_row(str(i), request["file_path"].name, suggested_name)
-                
-            console.print(table)
-            
-            # Ask which suggestions to apply
-            selected = Prompt.ask(
-                "\n[bold yellow]Enter the numbers of suggestions to apply (comma-separated, or 'all')[/]",
-                default="all"
-            )
-            
-            indices_to_apply = []
-            if selected.lower() == "all":
-                indices_to_apply = list(range(1, len(requests) + 1))
-            else:
-                for part in selected.split(","):
-                    part = part.strip()
-                    if part.isdigit():
-                        idx = int(part)
-                        if 1 <= idx <= len(requests):
-                            indices_to_apply.append(idx)
-            
-            # Apply the selected suggestions
-            for idx in indices_to_apply:
-                i = idx - 1  # Convert to 0-based index
-                request = requests[i]
-                suggested_name = results.get(idx, "")
-                
-                if not suggested_name:
-                    console.print(f"[yellow]No valid suggestion for directory #{idx}. Skipping.[/]")
-                    continue
-                
-                # Rename the directory
-                try:
-                    new_path = request["file_path"].parent / suggested_name
-                    request["file_path"].rename(new_path)
-                    console.print(f"[green]Renamed: {request['file_path'].name} → {suggested_name}[/]")
-                    
-                    self._log_operation("rename_directory", {
-                        "original_path": str(request["file_path"]),
-                        "original_name": request["file_path"].name,
-                        "new_name": suggested_name,
-                        "new_path": str(new_path),
-                        "description": request["description"],
-                    })
-                    
-                    # Register or update directory entry
-                    cat_purpose = suggested_name.split("_", 1)
-                    category = cat_purpose[0].split("-")[-1] if len(cat_purpose) > 0 else "misc"
-                    self._register_directory(new_path, category, request["description"])
-                    
-                except Exception as e:
-                    console.print(f"[red]Error renaming directory #{idx}: {e}[/]")
-        except Exception as e:
-            console.print(f"[red]Error in batch processing: {e}[/]")
+    def _format_size(self, size_bytes: int) -> str:
+        """Format size in bytes to human-readable format."""
+        for unit in ["B", "KB", "MB", "GB", "TB"]:
+            if size_bytes < 1024:
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024
+        return f"{size_bytes:.2f} PB"
 
     def _generate_file_preview(self, file_path: Path) -> str:
         """Generate a preview of the file content."""
@@ -435,7 +230,7 @@ Directories to process:
             file_type = file_path.suffix.lower()
             
             # Handle text files
-            if file_type in [".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".csv"]:
+            if file_type in [".txt", ".md", ".py", ".js", ".html", ".css", ".json", ".csv", ".xml", ".yaml", ".yml"]:
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     lines = f.readlines()[:self.config["max_preview_lines"]]
                 return "".join(lines)
@@ -444,28 +239,6 @@ Directories to process:
             return f"[Binary file with extension {file_type}]"
         except Exception as e:
             return f"[Error generating preview: {e}]"
-
-    def _extract_file_metadata(self, file_path: Path) -> Dict:
-        """Extract metadata from a file."""
-        if not file_path.exists():
-            return {"error": "File not found"}
-        
-        return {
-            "name": file_path.name,
-            "extension": file_path.suffix,
-            "size_bytes": file_path.stat().st_size,
-            "size_human": self._format_size(file_path.stat().st_size),
-            "modified": datetime.datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(),
-            "created": datetime.datetime.fromtimestamp(file_path.stat().st_ctime).isoformat(),
-        }
-
-    def _format_size(self, size_bytes: int) -> str:
-        """Format size in bytes to human-readable format."""
-        for unit in ["B", "KB", "MB", "GB", "TB"]:
-            if size_bytes < 1024:
-                return f"{size_bytes:.2f} {unit}"
-            size_bytes /= 1024
-        return f"{size_bytes:.2f} PB"
 
     def _log_operation(self, operation_type: str, details: Dict):
         """Log an operation to the operation log."""
@@ -723,9 +496,244 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
         
         return base_dir / suggested_name, True
 
-    def process_file(self, file_path: str):
+    def process_batch(self):
+        """Process all queued batch requests at once."""
+        if not self.batch_queue:
+            console.print("[yellow]Batch queue is empty. Nothing to process.[/]")
+            return
+            
+        console.print(f"[cyan]Processing {len(self.batch_queue)} batch requests...[/]")
+        
+        # Group requests by operation type
+        filename_requests = []
+        dirname_requests = []
+        
+        for request in self.batch_queue:
+            if request["operation_type"] == "filename":
+                filename_requests.append(request)
+            elif request["operation_type"] == "dirname":
+                dirname_requests.append(request)
+        
+        # Process filename requests
+        if filename_requests:
+            self._batch_process_filenames(filename_requests)
+            
+        # Process dirname requests
+        if dirname_requests:
+            self._batch_process_dirnames(dirname_requests)
+            
+        # Clear the queue after processing
+        self.batch_queue = []
+        
+    def _batch_process_filenames(self, requests):
+        """Process a batch of filename standardization requests."""
+        # Create a batch prompt with all requests
+        year_month = datetime.datetime.now().strftime("%Y-%m")
+        
+        batch_prompt = f"""Given multiple files and descriptions, generate standardized filenames for each.
+Format: {self.config["default_filename_pattern"]}
+
+Where:
+- {{year}}-{{month}} should be the current date ({year_month}) unless a specific date is mentioned
+- {{category}} is a single word representing the domain (e.g., finance, research, project)
+- {{descriptor}} is 2-3 words joined by hyphens that capture the main topic
+- {{context}} is 1-2 key identifying words
+
+Files to process:
+"""
+
+        # Add each file to the prompt
+        for i, request in enumerate(requests, 1):
+            batch_prompt += f"\nFILE {i}:\nOriginal: {request['file_path'].name}\nDescription: {request['description']}\n"
+            
+        batch_prompt += "\nReturn results in the following format for each file:\nFILE 1: standardized-filename\nFILE 2: standardized-filename\n...\n"
+        
+        try:
+            response = self._get_ai_completion(batch_prompt)
+            
+            # Parse the results
+            results = {}
+            file_num_pattern = re.compile(r"FILE\s+(\d+):\s+(.*)")
+            
+            for line in response.splitlines():
+                match = file_num_pattern.match(line.strip())
+                if match:
+                    file_num = int(match.group(1))
+                    filename = match.group(2).strip()
+                    if 1 <= file_num <= len(requests):
+                        results[file_num] = filename
+            
+            # Display results and confirm actions
+            console.print("\n[bold cyan]Batch Processing Results:[/]")
+            table = Table(title="Filename Suggestions")
+            table.add_column("#", style="cyan")
+            table.add_column("Original", style="blue")
+            table.add_column("Suggested", style="green")
+            
+            for i, request in enumerate(requests, 1):
+                suggested_name = results.get(i, "")
+                
+                if suggested_name and request["file_path"].suffix and not suggested_name.endswith(request["file_path"].suffix):
+                    suggested_name += request["file_path"].suffix
+                    
+                table.add_row(str(i), request["file_path"].name, suggested_name)
+                
+            console.print(table)
+            
+            # Ask which suggestions to apply
+            selected = Prompt.ask(
+                "\n[bold yellow]Enter the numbers of suggestions to apply (comma-separated, or 'all')[/]",
+                default="all"
+            )
+            
+            indices_to_apply = []
+            if selected.lower() == "all":
+                indices_to_apply = list(range(1, len(requests) + 1))
+            else:
+                for part in selected.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        idx = int(part)
+                        if 1 <= idx <= len(requests):
+                            indices_to_apply.append(idx)
+            
+            # Apply the selected suggestions
+            for idx in indices_to_apply:
+                i = idx - 1  # Convert to 0-based index
+                request = requests[i]
+                suggested_name = results.get(idx, "")
+                
+                if not suggested_name:
+                    console.print(f"[yellow]No valid suggestion for file #{idx}. Skipping.[/]")
+                    continue
+                    
+                # Add file extension if missing
+                if request["file_path"].suffix and not suggested_name.endswith(request["file_path"].suffix):
+                    suggested_name += request["file_path"].suffix
+                
+                # Rename the file
+                try:
+                    new_path = request["file_path"].with_name(suggested_name)
+                    request["file_path"].rename(new_path)
+                    console.print(f"[green]Renamed: {request['file_path'].name} → {suggested_name}[/]")
+                    
+                    self._log_operation("rename_file", {
+                        "original_path": str(request["file_path"]),
+                        "original_name": request["file_path"].name,
+                        "new_name": suggested_name,
+                        "new_path": str(new_path),
+                        "description": request["description"],
+                    })
+                except Exception as e:
+                    console.print(f"[red]Error renaming file #{idx}: {e}[/]")
+            
+        except Exception as e:
+            console.print(f"[red]Error in batch processing: {e}[/]")
+            
+    def _batch_process_dirnames(self, requests):
+        """Process a batch of directory name standardization requests."""
+        # Create a batch prompt with all requests
+        year_month = datetime.datetime.now().strftime("%Y-%m")
+        
+        batch_prompt = f"""Given multiple directories and descriptions, generate standardized directory names for each.
+Format: {self.config["default_directory_pattern"]}
+
+Where:
+- {{year}}-{{month}} should be the current date ({year_month})
+- {{category}} is a single word representing the project or domain
+- {{purpose}} is a concise description of the directory's purpose
+
+Directories to process:
+"""
+
+        # Add each directory to the prompt
+        for i, request in enumerate(requests, 1):
+            batch_prompt += f"\nDIR {i}:\nOriginal: {request['file_path'].name}\nDescription: {request['description']}\n"
+            
+        batch_prompt += "\nReturn results in the following format for each directory:\nDIR 1: standardized-dirname\nDIR 2: standardized-dirname\n...\n"
+        
+        try:
+            response = self._get_ai_completion(batch_prompt)
+            
+            # Parse the results using regex for more robustness
+            results = {}
+            dir_pattern = re.compile(r"DIR\s+(\d+):\s+(.*)")
+            
+            for line in response.splitlines():
+                match = dir_pattern.match(line.strip())
+                if match:
+                    dir_num = int(match.group(1))
+                    dirname = match.group(2).strip()
+                    if 1 <= dir_num <= len(requests):
+                        results[dir_num] = dirname
+            
+            # Display results and confirm actions
+            console.print("\n[bold cyan]Batch Processing Results:[/]")
+            table = Table(title="Directory Name Suggestions")
+            table.add_column("#", style="cyan")
+            table.add_column("Original", style="blue")
+            table.add_column("Suggested", style="green")
+            
+            for i, request in enumerate(requests, 1):
+                suggested_name = results.get(i, "")
+                table.add_row(str(i), request["file_path"].name, suggested_name)
+                
+            console.print(table)
+            
+            # Ask which suggestions to apply
+            selected = Prompt.ask(
+                "\n[bold yellow]Enter the numbers of suggestions to apply (comma-separated, or 'all')[/]",
+                default="all"
+            )
+            
+            indices_to_apply = []
+            if selected.lower() == "all":
+                indices_to_apply = list(range(1, len(requests) + 1))
+            else:
+                for part in selected.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        idx = int(part)
+                        if 1 <= idx <= len(requests):
+                            indices_to_apply.append(idx)
+            
+            # Apply the selected suggestions
+            for idx in indices_to_apply:
+                i = idx - 1  # Convert to 0-based index
+                request = requests[i]
+                suggested_name = results.get(idx, "")
+                
+                if not suggested_name:
+                    console.print(f"[yellow]No valid suggestion for directory #{idx}. Skipping.[/]")
+                    continue
+                
+                # Rename the directory
+                try:
+                    new_path = request["file_path"].parent / suggested_name
+                    request["file_path"].rename(new_path)
+                    console.print(f"[green]Renamed: {request['file_path'].name} → {suggested_name}[/]")
+                    
+                    self._log_operation("rename_directory", {
+                        "original_path": str(request["file_path"]),
+                        "original_name": request["file_path"].name,
+                        "new_name": suggested_name,
+                        "new_path": str(new_path),
+                        "description": request["description"],
+                    })
+                    
+                    # Register or update directory entry
+                    cat_purpose = suggested_name.split("_", 1)
+                    category = cat_purpose[0].split("-")[-1] if len(cat_purpose) > 0 else "misc"
+                    self._register_directory(new_path, category, request["description"])
+                    
+                except Exception as e:
+                    console.print(f"[red]Error renaming directory #{idx}: {e}[/]")
+        except Exception as e:
+            console.print(f"[red]Error in batch processing: {e}[/]")
+
+    def process_file(self, file_path: str, batch_mode=False):
         """Process a single file with human-in-the-loop guidance."""
-        path = Path(file_path).resolve()
+        path = Path(file_path).expanduser().resolve()
         
         if not path.exists():
             console.print(f"[red]Error: File '{file_path}' not found[/]")
@@ -743,7 +751,7 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
             f"[bold cyan]File:[/] {path.name}\n"
             f"[cyan]Path:[/] {path}\n"
             f"[cyan]Size:[/] {metadata['size_human']}\n"
-            f"[cyan]Modified:[/] {metadata['modified'][:19]}\n\n"
+            f"[cyan]Modified:[/] {metadata.get('modified', 'Unknown')[:19]}\n\n"
             f"[cyan]Preview:[/]\n{preview[:500]}{'...' if len(preview) > 500 else ''}",
             title="File Analysis"
         ))
@@ -751,7 +759,7 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
         # Get user description
         description = Prompt.ask(
             "\n[bold yellow]Please describe this file's content and purpose[/]\n"
-            "[dim](Type 'del' to delete the file)[/]"
+            "[dim](Type 'del' to delete the file, or 'batch' to add to batch queue)[/]"
         )
         
         # Handle deletion case
@@ -772,6 +780,20 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
                 # Continue with normal processing
                 description = Prompt.ask("[bold yellow]Please describe this file's content and purpose[/]")
         
+        # Handle batch mode
+        if description.strip().lower() == "batch":
+            console.print("[cyan]Adding file to batch queue for later processing...[/]")
+            description = Prompt.ask("[bold yellow]Please provide a description for batch processing[/]")
+            self._batch_add_request(path, description, "filename")
+            console.print(f"[green]Added {path.name} to batch queue. Current queue size: {len(self.batch_queue)}[/]")
+            return
+            
+        # If already in batch mode, just add to queue and return
+        if batch_mode:
+            self._batch_add_request(path, description, "filename")
+            console.print(f"[green]Added {path.name} to batch queue. Current queue size: {len(self.batch_queue)}[/]")
+            return
+            
         # Generate standardized filename
         new_name = self._get_standardized_filename(path.name, description)
         
@@ -799,6 +821,260 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
             if not feedback:
                 console.print("[yellow]Skipping rename stage.[/]")
                 new_name = path.name  # Keep original name
+            else:
+                # Try again with feedback
+                prompt = f"""Given a file, description, and feedback, generate a revised filename.
+    Format: {{year}}-{{month}}-{{category}}_{{descriptor}}_{{context}}
+
+    Original file: {path.name}
+    Description: {description}
+    Previous suggestion: {new_name}
+    User feedback: {feedback}
+
+    Return ONLY the revised filename."""
+
+                try:
+                    revised_name = self._get_ai_completion(prompt)
+                    
+                    # Keep original extension
+                    if revised_name and path.suffix and not revised_name.endswith(path.suffix):
+                        revised_name += path.suffix
+                    
+                    console.print(Panel(
+                        f"[bold cyan]Original:[/] {path.name}\n"
+                        f"[bold yellow]Previous suggestion:[/] {new_name}\n"
+                        f"[bold green]Revised suggestion:[/] {revised_name}",
+                        title="Revised Filename"
+                    ))
+                    
+                    if Confirm.ask("Use this revised name?"):
+                        new_name = revised_name
+                    else:
+                        console.print("[yellow]Skipping rename stage.[/]")
+                        new_name = path.name  # Keep original name
+                except Exception as e:
+                    console.print(f"[red]Error generating revised name: {e}[/]")
+                    new_name = path.name  # Keep original name
+        
+        # If we're renaming, do it now
+        if new_name != path.name:
+            try:
+                new_path = path.with_name(new_name)
+                path.rename(new_path)
+                console.print(f"[green]File renamed to: {new_name}[/]")
+                
+                self._log_operation("rename_file", {
+                    "original_path": str(path),
+                    "original_name": path.name,
+                    "new_name": new_name,
+                    "new_path": str(new_path),
+                    "description": description,
+                })
+                
+                # Update path for the next steps
+                path = new_path
+            except Exception as e:
+                console.print(f"[red]Error renaming file: {e}[/]")
+                # Continue with original path
+        
+        # Suggest organization
+        target_dir, is_new_dir = self._suggest_target_directory(path, new_name, description)
+        
+        # Ask for confirmation or feedback
+        if is_new_dir:
+            proceed = Confirm.ask(f"Create new directory '{target_dir.name}' and move file there?")
+            
+            if not proceed:
+                feedback = Prompt.ask(
+                    "[yellow]What kind of directory would be better?[/]\n"
+                    "[dim](Leave blank to skip moving)[/]"
+                )
+                
+                if not feedback:
+                    console.print("[yellow]Skipping organization stage.[/]")
+                    return
+                
+                # Try again with feedback
+                prompt = f"""Given a file and feedback, suggest a better directory name.
+    Format: {{year}}-{{month}}-{{category}}_{{purpose}}
+
+    File: {path.name}
+    Description: {description}
+    Previous suggestion: {target_dir.name}
+    User feedback: {feedback}
+
+    Return ONLY the revised directory name."""
+
+                try:
+                    revised_dir_name = self._get_ai_completion(prompt)
+                    target_dir = Path(self.config["default_base_dir"]) / revised_dir_name
+                    
+                    console.print(Panel(
+                        f"[bold green]Revised directory suggestion:[/] {target_dir.name}",
+                        title="Directory Revision"
+                    ))
+                    
+                    proceed = Confirm.ask(f"Create directory '{target_dir.name}' and move file there?")
+                    if not proceed:
+                        console.print("[yellow]Skipping organization stage.[/]")
+                        return
+                except Exception as e:
+                    console.print(f"[red]Error generating revised directory: {e}[/]")
+                    return
+            
+            # Create the new directory
+            try:
+                target_dir.mkdir(parents=True, exist_ok=True)
+                console.print(f"[green]Created directory: {target_dir}[/]")
+                
+                # Register the new directory
+                cat_purpose = target_dir.name.split("_", 1)
+                category = cat_purpose[0].split("-")[-1] if len(cat_purpose) > 0 else "misc"
+                self._register_directory(target_dir, category, description)
+                
+                self._log_operation("create_directory", {
+                    "directory_path": str(target_dir),
+                    "directory_name": target_dir.name,
+                    "description": description,
+                })
+            except Exception as e:
+                console.print(f"[red]Error creating directory: {e}[/]")
+                return
+        else:
+            # Using existing directory
+            proceed = True
+            if not self.config["skip_confirm_for_move"]:
+                proceed = Confirm.ask(f"Move file to '{target_dir}'?")
+            
+            if not proceed:
+                console.print("[yellow]Skipping organization stage.[/]")
+                return
+        
+        # Move the file
+        try:
+            target_file_path = target_dir / path.name
+            shutil.move(str(path), str(target_file_path))
+            console.print(f"[green]File moved to: {target_file_path}[/]")
+            
+            self._log_operation("move_file", {
+                "original_path": str(path),
+                "new_path": str(target_file_path),
+                "target_directory": str(target_dir),
+            })
+            
+        except Exception as e:
+            console.print(f"[red]Error moving file: {e}[/]")  
+
+    def process_directory(self, directory_path: str):
+        """Process a directory with human-in-the-loop guidance."""
+        path = Path(directory_path).expanduser().resolve()
+        
+        if not path.exists():
+            console.print(f"[red]Error: Directory '{directory_path}' not found[/]")
+            return
+        
+        if not path.is_dir():
+            console.print(f"[red]Error: '{directory_path}' is not a directory[/]")
+            return
+        
+        # Display directory info
+        file_count = sum(1 for _ in path.glob("*") if _.is_file())
+        subdir_count = sum(1 for _ in path.glob("*") if _.is_dir())
+        file_list = list(path.glob("*"))[:10]  # First 10 files/dirs
+        
+        file_list_str = "\n".join(f"- {'📁' if f.is_dir() else '📄'} {f.name}" for f in file_list)
+        if len(list(path.glob("*"))) > 10:
+            file_list_str += "\n- ..."
+        
+        console.print(Panel(
+            f"[bold cyan]Directory:[/] {path.name}\n"
+            f"[cyan]Path:[/] {path}\n"
+            f"[cyan]Contains:[/] {file_count} files, {subdir_count} subdirectories\n\n"
+            f"[cyan]Sample Contents:[/]\n{file_list_str}",
+            title="Directory Analysis"
+        ))
+        
+        # Get user description
+        description = Prompt.ask(
+            "\n[bold yellow]Please describe this directory's content and purpose[/]\n"
+            "[dim](Type 'del' to delete the directory and all its contents)[/]"
+        )
+        
+        # Handle deletion case
+        if description.strip().lower() == "del":
+            if Confirm.ask(f"[bold red]Are you sure you want to delete {path.name} and ALL its contents?[/]"):
+                try:
+                    shutil.rmtree(path)
+                    console.print(f"[green]Directory deleted: {path}[/]")
+                    self._log_operation("delete_directory", {
+                        "directory_path": str(path),
+                        "directory_name": path.name,
+                    })
+                except Exception as e:
+                    console.print(f"[red]Error deleting directory: {e}[/]")
+                return
+            else:
+                console.print("[yellow]Deletion cancelled.[/]")
+                # Continue with normal processing
+                description = Prompt.ask("[bold yellow]Please describe this directory's content and purpose[/]")
+        
+        # Generate standardized directory name
+        new_name = self._get_standardized_dirname(path, description)
+        
+        if not new_name:
+            console.print("[red]Failed to generate a standardized directory name.[/]")
+            return
+        
+        # Show the suggestion
+        console.print(Panel(
+            f"[bold cyan]Original:[/] {path.name}\n"
+            f"[bold green]Suggested:[/] {new_name}",
+            title="Directory Name Suggestion"
+        ))
+        
+        # Confirm the name
+        rename_confirmed = Confirm.ask("Would you like to rename the directory?")
+        
+        if not rename_confirmed:
+            # Let the user provide feedback and try again
+            feedback = Prompt.ask(
+                "[yellow]What would you like to change about the suggested name?[/]\n"
+                "[dim](Leave blank to skip renaming)[/]"
+            )
+            
+            if not feedback:
+                console.print("[yellow]Skipping rename stage.[/]")
+                new_name = path.name  # Keep original name
+            else:
+                # Try again with feedback
+                prompt = f"""Given a directory, description, and feedback, generate a revised directory name.
+    Format: {{year}}-{{month}}-{{category}}_{{purpose}}
+
+    Original directory: {path.name}
+    Description: {description}
+    Previous suggestion: {new_name}
+    User feedback: {feedback}
+
+    Return ONLY the revised directory name."""
+
+                try:
+                    revised_name = self._get_ai_completion(prompt)
+                    
+                    console.print(Panel(
+                        f"[bold cyan]Original:[/] {path.name}\n"
+                        f"[bold yellow]Previous suggestion:[/] {new_name}\n"
+                        f"[bold green]Revised suggestion:[/] {revised_name}",
+                        title="Revised Directory Name"
+                    ))
+                    
+                    if Confirm.ask("Use this revised name?"):
+                        new_name = revised_name
+                    else:
+                        console.print("[yellow]Skipping rename stage.[/]")
+                        new_name = path.name  # Keep original name
+                except Exception as e:
+                    console.print(f"[red]Error generating revised name: {e}[/]")
+                    new_name = path.name  # Keep original name
         
         # If we're renaming, do it now
         if new_name != path.name:
@@ -876,179 +1152,6 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
                         self.process_file(str(file_path))
         
         console.print(f"[bold green]Directory processing complete: {path}[/]")
-            else:
-                # Try again with feedback
-                prompt = f"""Given a directory, description, and feedback, generate a revised directory name.
-Format: {{year}}-{{month}}-{{category}}_{{purpose}}
-
-Original directory: {path.name}
-Description: {description}
-Previous suggestion: {new_name}
-User feedback: {feedback}
-
-Return ONLY the revised directory name."""
-
-                try:
-                    revised_name = self._get_ai_completion(prompt)
-                    
-                    console.print(Panel(
-                        f"[bold cyan]Original:[/] {path.name}\n"
-                        f"[bold yellow]Previous suggestion:[/] {new_name}\n"
-                        f"[bold green]Revised suggestion:[/] {revised_name}",
-                        title="Revised Directory Name"
-                    ))
-                    
-                    if Confirm.ask("Use this revised name?"):
-                        new_name = revised_name
-                    else:
-                        console.print("[yellow]Skipping rename stage.[/]")
-                        new_name = path.name  # Keep original name
-                except Exception as e:
-                    console.print(f"[red]Error generating revised name: {e}[/]")
-                    new_name = path.name  # Keep original name.name  # Keep original name
-            else:
-                # Try again with feedback
-                prompt = f"""Given a file, description, and feedback, generate a revised filename.
-Format: {{year}}-{{month}}-{{category}}_{{descriptor}}_{{context}}
-
-Original file: {path.name}
-Description: {description}
-Previous suggestion: {new_name}
-User feedback: {feedback}
-
-Return ONLY the revised filename."""
-
-                try:
-                    revised_name = self._get_ai_completion(prompt)
-                    
-                    # Keep original extension
-                    if revised_name and path.suffix and not revised_name.endswith(path.suffix):
-                        revised_name += path.suffix
-                    
-                    console.print(Panel(
-                        f"[bold cyan]Original:[/] {path.name}\n"
-                        f"[bold yellow]Previous suggestion:[/] {new_name}\n"
-                        f"[bold green]Revised suggestion:[/] {revised_name}",
-                        title="Revised Filename"
-                    ))
-                    
-                    if Confirm.ask("Use this revised name?"):
-                        new_name = revised_name
-                    else:
-                        console.print("[yellow]Skipping rename stage.[/]")
-                        new_name = path.name  # Keep original name
-                except Exception as e:
-                    console.print(f"[red]Error generating revised name: {e}[/]")
-                    new_name = path.name  # Keep original name
-        
-        # If we're renaming, do it now
-        if new_name != path.name:
-            try:
-                new_path = path.with_name(new_name)
-                path.rename(new_path)
-                console.print(f"[green]File renamed to: {new_name}[/]")
-                
-                self._log_operation("rename_file", {
-                    "original_path": str(path),
-                    "original_name": path.name,
-                    "new_name": new_name,
-                    "new_path": str(new_path),
-                    "description": description,
-                })
-                
-                # Update path for the next steps
-                path = new_path
-            except Exception as e:
-                console.print(f"[red]Error renaming file: {e}[/]")
-                # Continue with original path
-        
-        # Suggest organization
-        target_dir, is_new_dir = self._suggest_target_directory(path, new_name, description)
-        
-        # Ask for confirmation or feedback
-        if is_new_dir:
-            proceed = Confirm.ask(f"Create new directory '{target_dir.name}' and move file there?")
-            
-            if not proceed:
-                feedback = Prompt.ask(
-                    "[yellow]What kind of directory would be better?[/]\n"
-                    "[dim](Leave blank to skip moving)[/]"
-                )
-                
-                if not feedback:
-                    console.print("[yellow]Skipping organization stage.[/]")
-                    return
-                
-                # Try again with feedback
-                prompt = f"""Given a file and feedback, suggest a better directory name.
-Format: {{year}}-{{month}}-{{category}}_{{purpose}}
-
-File: {path.name}
-Description: {description}
-Previous suggestion: {target_dir.name}
-User feedback: {feedback}
-
-Return ONLY the revised directory name."""
-
-                try:
-                    revised_dir_name = self._get_ai_completion(prompt)
-                    target_dir = Path(self.config["default_base_dir"]) / revised_dir_name
-                    
-                    console.print(Panel(
-                        f"[bold green]Revised directory suggestion:[/] {target_dir.name}",
-                        title="Directory Revision"
-                    ))
-                    
-                    proceed = Confirm.ask(f"Create directory '{target_dir.name}' and move file there?")
-                    if not proceed:
-                        console.print("[yellow]Skipping organization stage.[/]")
-                        return
-                except Exception as e:
-                    console.print(f"[red]Error generating revised directory: {e}[/]")
-                    return
-            
-            # Create the new directory
-            try:
-                target_dir.mkdir(parents=True, exist_ok=True)
-                console.print(f"[green]Created directory: {target_dir}[/]")
-                
-                # Register the new directory
-                cat_purpose = target_dir.name.split("_", 1)
-                category = cat_purpose[0].split("-")[-1] if len(cat_purpose) > 0 else "misc"
-                self._register_directory(target_dir, category, description)
-                
-                self._log_operation("create_directory", {
-                    "directory_path": str(target_dir),
-                    "directory_name": target_dir.name,
-                    "description": description,
-                })
-            except Exception as e:
-                console.print(f"[red]Error creating directory: {e}[/]")
-                return
-        else:
-            # Using existing directory
-            proceed = True
-            if not self.config["skip_confirm_for_move"]:
-                proceed = Confirm.ask(f"Move file to '{target_dir}'?")
-            
-            if not proceed:
-                console.print("[yellow]Skipping organization stage.[/]")
-                return
-        
-        # Move the file
-        try:
-            target_file_path = target_dir / path.name
-            shutil.move(str(path), str(target_file_path))
-            console.print(f"[green]File moved to: {target_file_path}[/]")
-            
-            self._log_operation("move_file", {
-                "original_path": str(path),
-                "new_path": str(target_file_path),
-                "target_directory": str(target_dir),
-            })
-            
-        except Exception as e:
-            console.print(f"[red]Error moving file: {e}[/]")
 
     def view_operation_log(self):
         """Display the operation log to the user."""
@@ -1058,7 +1161,7 @@ Return ONLY the revised directory name."""
                 return
             
             with open(LOG_FILE, "r") as f:
-                log_entries = [json.loads(line) for line in f.readlines()]
+                log_entries = [json.loads(line) for line in f if line.strip()]
             
             if not log_entries:
                 console.print("[yellow]Operation log is empty.[/]")
@@ -1111,7 +1214,82 @@ Return ONLY the revised directory name."""
         
         except Exception as e:
             console.print(f"[red]Error displaying operation log: {e}[/]")
-    
+
+    def _batch_processing_mode(self):
+        """Enter batch processing mode."""
+        console.print(Panel(
+            "Batch Processing Mode\n"
+            "Add multiple files to the queue for bulk processing.",
+            title="Batch Mode"
+        ))
+        
+        # Display current queue
+        if self.batch_queue:
+            console.print(f"[cyan]Current queue has {len(self.batch_queue)} items.[/]")
+            if Confirm.ask("View current queue?"):
+                table = Table(title="Batch Queue")
+                table.add_column("#", style="cyan")
+                table.add_column("Path", style="blue")
+                table.add_column("Type", style="green")
+                
+                for i, item in enumerate(self.batch_queue, 1):
+                    table.add_row(
+                        str(i),
+                        str(item["file_path"]),
+                        item["operation_type"]
+                    )
+                
+                console.print(table)
+        
+        # Batch actions menu
+        while True:
+            console.print("\n[bold cyan]Batch Actions:[/]")
+            console.print("1. Add files to batch")
+            console.print("2. Add directory to batch")
+            console.print("3. Process batch queue")
+            console.print("4. Clear batch queue")
+            console.print("5. Return to main menu")
+            
+            choice = Prompt.ask("\nEnter your choice", choices=["1", "2", "3", "4", "5"])
+            
+            if choice == "1":
+                file_path = Prompt.ask("[bold]Enter the path to a file[/]")
+                path = Path(file_path).expanduser().resolve()
+                
+                if not path.exists() or not path.is_file():
+                    console.print(f"[red]Error: '{file_path}' is not a valid file[/]")
+                    continue
+                
+                description = Prompt.ask("[bold]Enter a description for this file[/]")
+                self._batch_add_request(path, description, "filename")
+                console.print(f"[green]Added to batch queue. Queue size: {len(self.batch_queue)}[/]")
+                
+            elif choice == "2":
+                dir_path = Prompt.ask("[bold]Enter the path to a directory[/]")
+                path = Path(dir_path).expanduser().resolve()
+                
+                if not path.exists() or not path.is_dir():
+                    console.print(f"[red]Error: '{dir_path}' is not a valid directory[/]")
+                    continue
+                
+                description = Prompt.ask("[bold]Enter a description for this directory[/]")
+                self._batch_add_request(path, description, "dirname")
+                console.print(f"[green]Added to batch queue. Queue size: {len(self.batch_queue)}[/]")
+                
+            elif choice == "3":
+                if not self.batch_queue:
+                    console.print("[yellow]Batch queue is empty. Nothing to process.[/]")
+                else:
+                    self.process_batch()
+                
+            elif choice == "4":
+                if Confirm.ask("[bold red]Are you sure you want to clear the batch queue?[/]"):
+                    self.batch_queue = []
+                    console.print("[green]Batch queue cleared.[/]")
+                
+            elif choice == "5":
+                break
+
     def manage_directories(self):
         """Manage the directory registry."""
         while True:
@@ -1216,84 +1394,238 @@ Return ONLY the revised directory name."""
             else:
                 # Return to main menu
                 break
-    
-    def process_directory(self, directory_path: str):
-        """Process a directory with human-in-the-loop guidance."""
-        path = Path(directory_path).resolve()
-        
-        if not path.exists():
-            console.print(f"[red]Error: Directory '{directory_path}' not found[/]")
-            return
-        
-        if not path.is_dir():
-            console.print(f"[red]Error: '{directory_path}' is not a directory[/]")
-            return
-        
-        # Display directory info
-        file_count = sum(1 for _ in path.glob("*") if _.is_file())
-        subdir_count = sum(1 for _ in path.glob("*") if _.is_dir())
-        file_list = list(path.glob("*"))[:10]  # First 10 files/dirs
-        
-        file_list_str = "\n".join(f"- {'📁' if f.is_dir() else '📄'} {f.name}" for f in file_list)
-        if len(list(path.glob("*"))) > 10:
-            file_list_str += "\n- ..."
-        
+
+    def _edit_configuration(self):
+        """Edit the application configuration."""
         console.print(Panel(
-            f"[bold cyan]Directory:[/] {path.name}\n"
-            f"[cyan]Path:[/] {path}\n"
-            f"[cyan]Contains:[/] {file_count} files, {subdir_count} subdirectories\n\n"
-            f"[cyan]Sample Contents:[/]\n{file_list_str}",
-            title="Directory Analysis"
+            "Configuration Editor\n"
+            "Modify the behavior of Smart Organizer.",
+            title="Configuration"
         ))
         
-        # Get user description
-        description = Prompt.ask(
-            "\n[bold yellow]Please describe this directory's content and purpose[/]\n"
-            "[dim](Type 'del' to delete the directory and all its contents)[/]"
-        )
+        # Display current configuration
+        table = Table(title="Current Configuration")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
         
-        # Handle deletion case
-        if description.strip().lower() == "del":
-            if Confirm.ask(f"[bold red]Are you sure you want to delete {path.name} and ALL its contents?[/]"):
-                try:
-                    shutil.rmtree(path)
-                    console.print(f"[green]Directory deleted: {path}[/]")
-                    self._log_operation("delete_directory", {
-                        "directory_path": str(path),
-                        "directory_name": path.name,
-                    })
-                except Exception as e:
-                    console.print(f"[red]Error deleting directory: {e}[/]")
-                return
-            else:
-                console.print("[yellow]Deletion cancelled.[/]")
-                # Continue with normal processing
-                description = Prompt.ask("[bold yellow]Please describe this directory's content and purpose[/]")
+        for key, value in self.config.items():
+            table.add_row(key, str(value))
         
-        # Generate standardized directory name
-        new_name = self._get_standardized_dirname(path, description)
+        console.print(table)
         
-        if not new_name:
-            console.print("[red]Failed to generate a standardized directory name.[/]")
-            return
-        
-        # Show the suggestion
-        console.print(Panel(
-            f"[bold cyan]Original:[/] {path.name}\n"
-            f"[bold green]Suggested:[/] {new_name}",
-            title="Directory Name Suggestion"
-        ))
-        
-        # Confirm the name
-        rename_confirmed = Confirm.ask("Would you like to rename the directory?")
-        
-        if not rename_confirmed:
-            # Let the user provide feedback and try again
-            feedback = Prompt.ask(
-                "[yellow]What would you like to change about the suggested name?[/]\n"
-                "[dim](Leave blank to skip renaming)[/]"
+        # Edit configuration
+        if Confirm.ask("\nWould you like to edit the configuration?"):
+            setting = Prompt.ask(
+                "[bold]Enter the setting to edit[/]",
+                choices=list(self.config.keys())
             )
             
-            if not feedback:
-                console.print("[yellow]Skipping rename stage.[/]")
-                new_name = path
+            current_value = self.config[setting]
+            new_value = Prompt.ask(
+                f"[bold]Enter new value for {setting}[/]",
+                default=str(current_value)
+            )
+            
+            # Handle different value types
+            if isinstance(current_value, bool):
+                new_value = new_value.lower() in ["true", "yes", "y", "1"]
+            elif isinstance(current_value, int):
+                try:
+                    new_value = int(new_value)
+                except ValueError:
+                    console.print("[red]Invalid integer value. Setting not changed.[/]")
+                    return
+            elif isinstance(current_value, float):
+                try:
+                    new_value = float(new_value)
+                except ValueError:
+                    console.print("[red]Invalid float value. Setting not changed.[/]")
+                    return
+            
+            # Update configuration
+            self.config[setting] = new_value
+            
+            # Save to file
+            try:
+                with open(CONFIG_PATH, "w") as f:
+                    json.dump(self.config, f, indent=2)
+                console.print(f"[green]Configuration updated: {setting} = {new_value}[/]")
+            except Exception as e:
+                console.print(f"[red]Error saving configuration: {e}[/]")
+
+    def run(self):
+        """Run the main application loop."""
+        console.print(Panel(
+            "Welcome to Smart Organizer - AI-powered file management utility",
+            style="bold green"
+        ))
+        
+        while True:
+            console.print("\n[bold cyan]Main Menu:[/]")
+            console.print("1. Process a file")
+            console.print("2. Process a directory")
+            console.print("3. Batch processing mode")
+            console.print("4. Manage registered directories")
+            console.print("5. View operation log")
+            console.print("6. Configuration")
+            console.print("7. Exit")
+            
+            choice = Prompt.ask("\nEnter your choice", choices=["1", "2", "3", "4", "5", "6", "7"])
+            
+            if choice == "1":
+                file_path = Prompt.ask("[bold]Enter the path to a file[/]")
+                self.process_file(file_path)
+                
+            elif choice == "2":
+                dir_path = Prompt.ask("[bold]Enter the path to a directory[/]")
+                self.process_directory(dir_path)
+                
+            elif choice == "3":
+                self._batch_processing_mode()
+                
+            elif choice == "4":
+                self.manage_directories()
+                
+            elif choice == "5":
+                self.view_operation_log()
+                
+            elif choice == "6":
+                self._edit_configuration()
+                
+            elif choice == "7":
+                console.print("[green]Thank you for using Smart Organizer![/]")
+                break
+
+
+    # Add the command-line interface functions
+    def display_help():
+        """Display help information."""
+        help_text = """
+    # Smart Organizer
+
+    A human-in-the-loop AI command line tool for file and directory management.
+
+    ## Commands
+
+    - `smart_organizer file <path>` - Process a single file
+    - `smart_organizer dir <path>` - Process a directory
+    - `smart_organizer batch` - Process files in batch mode
+    - `smart_organizer log` - View operation log
+    - `smart_organizer dirs` - Manage registered directories
+    - `smart_organizer config` - Configure settings
+    - `smart_organizer help` - Display this help message
+
+    ## Features
+
+    - AI-powered filename standardization
+    - Intelligent directory organization
+    - Batch processing for efficiency
+    - Operation logging
+    - File deletion with confirmation
+        """
+        
+        console.print(Markdown(help_text))
+
+    def configure_settings():
+        """Configure tool settings."""
+        try:
+            # Load current config
+            if not CONFIG_PATH.exists():
+                config = DEFAULT_CONFIG
+                with open(CONFIG_PATH, "w") as f:
+                    json.dump(config, f, indent=2)
+            else:
+                with open(CONFIG_PATH, "r") as f:
+                    config = json.load(f)
+            
+            # Display current settings
+            console.print("\n[bold cyan]Current Settings:[/]")
+            for key, value in config.items():
+                console.print(f"[blue]{key}:[/] {value}")
+            
+            # Ask which setting to change
+            console.print("\n[bold cyan]Which setting would you like to change?[/]")
+            for i, key in enumerate(config.keys(), 1):
+                console.print(f"{i}. {key}")
+            console.print(f"{len(config) + 1}. Save and return")
+            
+            choice = Prompt.ask(
+                "\nEnter your choice",
+                choices=[str(i) for i in range(1, len(config) + 2)]
+            )
+            
+            if int(choice) <= len(config):
+                # Update the selected setting
+                setting_key = list(config.keys())[int(choice) - 1]
+                
+                # Handle different setting types
+                if isinstance(config[setting_key], bool):
+                    config[setting_key] = Confirm.ask(f"Enable {setting_key}?", default=config[setting_key])
+                elif isinstance(config[setting_key], int):
+                    config[setting_key] = int(Prompt.ask(
+                        f"Enter new value for {setting_key}",
+                        default=str(config[setting_key])
+                    ))
+                elif isinstance(config[setting_key], float):
+                    config[setting_key] = float(Prompt.ask(
+                        f"Enter new value for {setting_key}",
+                        default=str(config[setting_key])
+                    ))
+                else:
+                    config[setting_key] = Prompt.ask(
+                        f"Enter new value for {setting_key}",
+                        default=str(config[setting_key])
+                    )
+                
+                # Save the updated config
+                with open(CONFIG_PATH, "w") as f:
+                    json.dump(config, f, indent=2)
+                
+                console.print(f"[green]Updated {setting_key} to {config[setting_key]}[/]")
+                
+                # Ask if they want to update more settings
+                if Confirm.ask("Would you like to update more settings?"):
+                    configure_settings()
+            
+        except Exception as e:
+            console.print(f"[red]Error configuring settings: {e}[/]")
+
+def main():
+    """Main function to run the Smart Organizer tool."""
+    if len(sys.argv) < 2:
+        # Run in interactive mode
+        organizer = SmartOrganizer()
+        organizer.run()
+        return
+    
+    command = sys.argv[1].lower()
+    
+    if command == "help":
+        display_help()
+        return
+    
+    organizer = SmartOrganizer()
+    
+    if command == "file" and len(sys.argv) > 2:
+        organizer.process_file(sys.argv[2])
+    
+    elif command == "dir" and len(sys.argv) > 2:
+        organizer.process_directory(sys.argv[2])
+        
+    elif command == "batch":
+        organizer._batch_processing_mode()
+    
+    elif command == "log":
+        organizer.view_operation_log()
+    
+    elif command == "dirs":
+        organizer.manage_directories()
+    
+    elif command == "config":
+        configure_settings()
+    
+    else:
+        console.print("[red]Invalid command. Use 'smart_organizer help' for usage information.[/]")
+
+if __name__ == "__main__":
+    main()
