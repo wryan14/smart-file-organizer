@@ -509,7 +509,7 @@ File info:
 - New standardized name: {new_name}
 - Description: {description}
 
-Return ONLY the directory name in the exact format: {{year}}-{{month}}-{{category}}_{{purpose}}"""
+Return ONLY the directory name in the exact format: {{category}}_{{purpose}}"""
 
             try:
                 suggested_name = self._get_ai_completion(prompt)
