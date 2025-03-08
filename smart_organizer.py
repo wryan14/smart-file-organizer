@@ -45,7 +45,7 @@ DEFAULT_CONFIG = {
     "max_preview_lines": 10,
     "max_directories_to_show": 10,
     "min_confidence_threshold": 0.7,
-    "default_base_dir": str(Path.home() / "Documents"),
+    "default_base_dir": str(Path.home() / "Cleanup"),
     "ai_model": "gpt-4o",
     "skip_confirm_for_move": False,
     "default_directory_pattern": "{year}-{month}-{category}_{purpose}",
@@ -208,6 +208,50 @@ class SmartOrganizer:
                 "name": file_path.name,
                 "error": f"Error accessing file: {e}"
             }
+
+    def _open_file(self, file_path: Path):
+        """Open the file in the default application."""
+        try:
+            # Cross-platform way to open files with default application
+            import subprocess
+            import platform
+            
+            system = platform.system()
+            
+            if system == 'Darwin':  # macOS
+                subprocess.run(['open', str(file_path)], check=True)
+            elif system == 'Windows':
+                os.startfile(str(file_path))
+            else:  # Linux and other Unix-like
+                subprocess.run(['xdg-open', str(file_path)], check=True)
+                
+            console.print(f"[green]Opened {file_path.name} in default application[/]")
+            return True
+        except Exception as e:
+            console.print(f"[red]Error opening file: {e}[/]")
+            return False
+
+    def _open_directory(self, dir_path: Path):
+        """Open a directory in the file explorer."""
+        try:
+            # Cross-platform way to open directories with default file explorer
+            import subprocess
+            import platform
+            
+            system = platform.system()
+            
+            if system == 'Darwin':  # macOS
+                subprocess.run(['open', str(dir_path)], check=True)
+            elif system == 'Windows':
+                os.startfile(str(dir_path))
+            else:  # Linux and other Unix-like
+                subprocess.run(['xdg-open', str(dir_path)], check=True)
+                
+            console.print(f"[green]Opened {dir_path.name} in file explorer[/]")
+            return True
+        except Exception as e:
+            console.print(f"[red]Error opening directory: {e}[/]")
+            return False
 
     def _format_size(self, size_bytes: int) -> str:
         """Format size in bytes to human-readable format."""
@@ -756,11 +800,20 @@ Directories to process:
             title="File Analysis"
         ))
         
+        # Add option to open the file
+        if Confirm.ask("\nWould you like to open this file to review it?"):
+            self._open_file(path)
+        
         # Get user description
         description = Prompt.ask(
             "\n[bold yellow]Please describe this file's content and purpose[/]\n"
-            "[dim](Type 'del' to delete the file, or 'batch' to add to batch queue)[/]"
+            "[dim](Type 'del' to delete the file, 'open' to open the file, or 'batch' to add to batch queue)[/]"
         )
+        
+        # Handle open request
+        if description.strip().lower() == "open":
+            self._open_file(path)
+            description = Prompt.ask("[bold yellow]Please describe this file's content and purpose[/]")
         
         # Handle deletion case
         if description.strip().lower() == "del":
@@ -963,7 +1016,7 @@ Directories to process:
             })
             
         except Exception as e:
-            console.print(f"[red]Error moving file: {e}[/]")  
+            console.print(f"[red]Error moving file: {e}[/]")
 
     def process_directory(self, directory_path: str):
         """Process a directory with human-in-the-loop guidance."""
@@ -994,11 +1047,20 @@ Directories to process:
             title="Directory Analysis"
         ))
         
+        # Add option to open the directory
+        if Confirm.ask("\nWould you like to open this directory to explore its contents?"):
+            self._open_directory(path)
+        
         # Get user description
         description = Prompt.ask(
             "\n[bold yellow]Please describe this directory's content and purpose[/]\n"
-            "[dim](Type 'del' to delete the directory and all its contents)[/]"
+            "[dim](Type 'del' to delete the directory, 'open' to open in file explorer)[/]"
         )
+        
+        # Handle open request
+        if description.strip().lower() == "open":
+            self._open_directory(path)
+            description = Prompt.ask("[bold yellow]Please describe this directory's content and purpose[/]")
         
         # Handle deletion case
         if description.strip().lower() == "del":
@@ -1497,98 +1559,98 @@ Directories to process:
                 break
 
 
-    # Add the command-line interface functions
-    def display_help():
-        """Display help information."""
-        help_text = """
-    # Smart Organizer
+# Add the command-line interface functions
+def display_help():
+    """Display help information."""
+    help_text = """
+# Smart Organizer
 
-    A human-in-the-loop AI command line tool for file and directory management.
+A human-in-the-loop AI command line tool for file and directory management.
 
-    ## Commands
+## Commands
 
-    - `smart_organizer file <path>` - Process a single file
-    - `smart_organizer dir <path>` - Process a directory
-    - `smart_organizer batch` - Process files in batch mode
-    - `smart_organizer log` - View operation log
-    - `smart_organizer dirs` - Manage registered directories
-    - `smart_organizer config` - Configure settings
-    - `smart_organizer help` - Display this help message
+- `smart_organizer file <path>` - Process a single file
+- `smart_organizer dir <path>` - Process a directory
+- `smart_organizer batch` - Process files in batch mode
+- `smart_organizer log` - View operation log
+- `smart_organizer dirs` - Manage registered directories
+- `smart_organizer config` - Configure settings
+- `smart_organizer help` - Display this help message
 
-    ## Features
+## Features
 
-    - AI-powered filename standardization
-    - Intelligent directory organization
-    - Batch processing for efficiency
-    - Operation logging
-    - File deletion with confirmation
-        """
+- AI-powered filename standardization
+- Intelligent directory organization
+- Batch processing for efficiency
+- Operation logging
+- File deletion with confirmation
+    """
+    
+    console.print(Markdown(help_text))
+
+def configure_settings():
+    """Configure tool settings."""
+    try:
+        # Load current config
+        if not CONFIG_PATH.exists():
+            config = DEFAULT_CONFIG
+            with open(CONFIG_PATH, "w") as f:
+                json.dump(config, f, indent=2)
+        else:
+            with open(CONFIG_PATH, "r") as f:
+                config = json.load(f)
         
-        console.print(Markdown(help_text))
-
-    def configure_settings():
-        """Configure tool settings."""
-        try:
-            # Load current config
-            if not CONFIG_PATH.exists():
-                config = DEFAULT_CONFIG
-                with open(CONFIG_PATH, "w") as f:
-                    json.dump(config, f, indent=2)
+        # Display current settings
+        console.print("\n[bold cyan]Current Settings:[/]")
+        for key, value in config.items():
+            console.print(f"[blue]{key}:[/] {value}")
+        
+        # Ask which setting to change
+        console.print("\n[bold cyan]Which setting would you like to change?[/]")
+        for i, key in enumerate(config.keys(), 1):
+            console.print(f"{i}. {key}")
+        console.print(f"{len(config) + 1}. Save and return")
+        
+        choice = Prompt.ask(
+            "\nEnter your choice",
+            choices=[str(i) for i in range(1, len(config) + 2)]
+        )
+        
+        if int(choice) <= len(config):
+            # Update the selected setting
+            setting_key = list(config.keys())[int(choice) - 1]
+            
+            # Handle different setting types
+            if isinstance(config[setting_key], bool):
+                config[setting_key] = Confirm.ask(f"Enable {setting_key}?", default=config[setting_key])
+            elif isinstance(config[setting_key], int):
+                config[setting_key] = int(Prompt.ask(
+                    f"Enter new value for {setting_key}",
+                    default=str(config[setting_key])
+                ))
+            elif isinstance(config[setting_key], float):
+                config[setting_key] = float(Prompt.ask(
+                    f"Enter new value for {setting_key}",
+                    default=str(config[setting_key])
+                ))
             else:
-                with open(CONFIG_PATH, "r") as f:
-                    config = json.load(f)
+                config[setting_key] = Prompt.ask(
+                    f"Enter new value for {setting_key}",
+                    default=str(config[setting_key])
+                )
             
-            # Display current settings
-            console.print("\n[bold cyan]Current Settings:[/]")
-            for key, value in config.items():
-                console.print(f"[blue]{key}:[/] {value}")
+            # Save the updated config
+            with open(CONFIG_PATH, "w") as f:
+                json.dump(config, f, indent=2)
             
-            # Ask which setting to change
-            console.print("\n[bold cyan]Which setting would you like to change?[/]")
-            for i, key in enumerate(config.keys(), 1):
-                console.print(f"{i}. {key}")
-            console.print(f"{len(config) + 1}. Save and return")
+            console.print(f"[green]Updated {setting_key} to {config[setting_key]}[/]")
             
-            choice = Prompt.ask(
-                "\nEnter your choice",
-                choices=[str(i) for i in range(1, len(config) + 2)]
-            )
-            
-            if int(choice) <= len(config):
-                # Update the selected setting
-                setting_key = list(config.keys())[int(choice) - 1]
-                
-                # Handle different setting types
-                if isinstance(config[setting_key], bool):
-                    config[setting_key] = Confirm.ask(f"Enable {setting_key}?", default=config[setting_key])
-                elif isinstance(config[setting_key], int):
-                    config[setting_key] = int(Prompt.ask(
-                        f"Enter new value for {setting_key}",
-                        default=str(config[setting_key])
-                    ))
-                elif isinstance(config[setting_key], float):
-                    config[setting_key] = float(Prompt.ask(
-                        f"Enter new value for {setting_key}",
-                        default=str(config[setting_key])
-                    ))
-                else:
-                    config[setting_key] = Prompt.ask(
-                        f"Enter new value for {setting_key}",
-                        default=str(config[setting_key])
-                    )
-                
-                # Save the updated config
-                with open(CONFIG_PATH, "w") as f:
-                    json.dump(config, f, indent=2)
-                
-                console.print(f"[green]Updated {setting_key} to {config[setting_key]}[/]")
-                
-                # Ask if they want to update more settings
-                if Confirm.ask("Would you like to update more settings?"):
-                    configure_settings()
-            
-        except Exception as e:
-            console.print(f"[red]Error configuring settings: {e}[/]")
+            # Ask if they want to update more settings
+            if Confirm.ask("Would you like to update more settings?"):
+                configure_settings()
+        
+    except Exception as e:
+        console.print(f"[red]Error configuring settings: {e}[/]")
 
 def main():
     """Main function to run the Smart Organizer tool."""
