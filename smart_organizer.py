@@ -48,7 +48,8 @@ DEFAULT_CONFIG = {
     "default_base_dir": str(Path.home() / "Cleanup"),
     "ai_model": "gpt-4o",
     "skip_confirm_for_move": False,
-    "default_directory_pattern": "{year}-{month}-{category}_{purpose}",
+    # "default_directory_pattern": "{year}-{month}-{category}_{purpose}",
+    "default_directory_pattern": "{category}",
     "default_filename_pattern": "{year}-{month}-{category}_{descriptor}_{context}",
 }
 
@@ -354,43 +355,19 @@ Return ONLY the filename in the exact format: {{year}}-{{month}}-{{category}}_{{
             return "DELETE"
         
         # Otherwise, ask AI for a standardized name
-        year_month = datetime.datetime.now().strftime("%Y-%m")
-        
-        # Get a list of files in the directory
-        file_list = []
-        try:
-            for item in original_path.iterdir():
-                if item.is_file():
-                    file_list.append(item.name)
-                    if len(file_list) >= 20:  # Limit to 20 files
-                        break
-        except Exception:
-            pass
-        
-        file_list_str = "\n".join(f"- {f}" for f in file_list)
-        
-        prompt = f"""Given a directory and description, generate a structured directory name.
-Format: {self.config["default_directory_pattern"]}
+        prompt = f"""Given a directory and description, generate a simple, categorical directory name.
+    Format: {{Category}}
 
-Where:
-- {{year}}-{{month}} should be the current date ({year_month})
-- {{category}} is a single word representing the project or domain
-- {{purpose}} is a concise description of the directory's purpose
+    Guidelines:
+    - The directory name should be a simple, clear category (e.g., "Documents", "ProjectFiles", "FinancialReports")
+    - Use PascalCase (capitalize each word, no spaces)
+    - Keep the name concise but descriptive (typically 1-2 words)
+    - The name should be broad enough to group similar files, not overly specific
 
-Guidelines:
-- The directory name should reflect both its content and purpose
-- Use kebab-case (hyphens) for multi-word categories or purposes
-- Use underscores between pattern elements
-- Keep the name concise but descriptive
-- Use lowercase except for proper nouns
+    Original Directory: {original_path.name}
+    Description: {description}
 
-Original Directory: {original_path.name}
-Description: {description}
-
-Files in directory (sample):
-{file_list_str}
-
-Return ONLY the directory name in the exact format: {{year}}-{{month}}-{{category}}_{{purpose}}"""
+    Return ONLY the directory name as a single PascalCase word or PascalCase compound word."""
 
         try:
             result = self._get_ai_completion(prompt)
@@ -497,19 +474,20 @@ NEW_DIRECTORY_SUGGESTION: [if recommending a new directory, suggest a name in th
             year_month = datetime.datetime.now().strftime("%Y-%m")
             
             prompt = f"""Given a file, suggest an appropriate new directory name.
-Format: {self.config["default_directory_pattern"]}
+Format: {{Category}}
 
-Where:
-- {{year}}-{{month}} should be the current date ({year_month})
-- {{category}} is a single word representing the project or domain
-- {{purpose}} is a concise description of the directory's purpose
+Guidelines:
+- The directory name should be a simple, clear category (e.g., "Documents", "ProjectFiles", "FinancialReports")
+- Use PascalCase (capitalize each word, no spaces)
+- Keep the name concise but descriptive (typically 1-2 words)
+- The name should be broad enough to group similar files, not overly specific
 
 File info:
 - Original name: {file_path.name}
 - New standardized name: {new_name}
 - Description: {description}
 
-Return ONLY the directory name in the exact format: {{category}}_{{purpose}}"""
+Return ONLY the directory name as a single PascalCase word or PascalCase compound word."""
 
             try:
                 suggested_name = self._get_ai_completion(prompt)
@@ -683,7 +661,6 @@ Files to process:
 Format: {self.config["default_directory_pattern"]}
 
 Where:
-- {{year}}-{{month}} should be the current date ({year_month})
 - {{category}} is a single word representing the project or domain
 - {{purpose}} is a concise description of the directory's purpose
 
@@ -949,14 +926,20 @@ Directories to process:
                 
                 # Try again with feedback
                 prompt = f"""Given a file and feedback, suggest a better directory name.
-    Format: {{year}}-{{month}}-{{category}}_{{purpose}}
+Format: {{Category}}
 
-    File: {path.name}
-    Description: {description}
-    Previous suggestion: {target_dir.name}
-    User feedback: {feedback}
+Guidelines:
+- The directory name should be a simple, clear category (e.g., "Documents", "ProjectFiles", "FinancialReports")
+- Use PascalCase (capitalize each word, no spaces)
+- Keep the name concise but descriptive (typically 1-2 words)
+- The name should be broad enough to group similar files, not overly specific
 
-    Return ONLY the revised directory name."""
+File: {path.name}
+Description: {description}
+Previous suggestion: {target_dir.name}
+User feedback: {feedback}
+
+Return ONLY the directory name as a single PascalCase word or PascalCase compound word."""
 
                 try:
                     revised_dir_name = self._get_ai_completion(prompt)
