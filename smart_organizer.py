@@ -95,7 +95,8 @@ DEFAULT_CONFIG = {
     "max_directories_to_show": 10,
     "min_confidence_threshold": 0.7,
     "default_base_dir": str(Path.home() / "Cleanup"),
-    "ai_model": "gpt-4o",
+    "api_provider": "openrouter",
+    "api_model": "openai/gpt-4o",
     "skip_confirm_for_move": False,
     "default_directory_pattern": "{category}",
     "default_filename_pattern": "{year}-{month}-{category}_{descriptor}_{context}",
@@ -198,31 +199,46 @@ class SmartOrganizer:
         self._save_directory_registry(directories)
     
     def _setup_ai_client(self):
-        """Set up the OpenAI client.
+        """Set up the AI client based on configured provider.
+
+        Supports OpenRouter (default) and direct OpenAI. OpenRouter provides
+        access to multiple model providers through a single API.
 
         Raises:
             SystemExit: When API key is missing or client initialization fails
         """
         load_dotenv()
-        api_key = os.getenv("OPENAI_API_KEY")
+        provider = self.config.get("api_provider", "openrouter")
+
+        if provider == "openrouter":
+            api_key = os.getenv("OPENROUTER_API_KEY")
+            env_var_name = "OPENROUTER_API_KEY"
+            base_url = "https://openrouter.ai/api/v1"
+        else:
+            api_key = os.getenv("OPENAI_API_KEY")
+            env_var_name = "OPENAI_API_KEY"
+            base_url = None
 
         if not api_key:
-            logging.error("OPENAI_API_KEY not found in environment or .env file")
+            logging.error(f"{env_var_name} not found in environment or .env file")
             console.print(Panel(
-                "[red]OPENAI_API_KEY not found in environment or .env file.[/]\n"
-                "Set your OpenAI API key to use AI features.",
+                f"[red]{env_var_name} not found in environment or .env file.[/]\n"
+                f"Set your API key to use AI features.",
                 title="API Key Error"
             ))
             sys.exit(1)
 
         try:
-            self.client = OpenAI()
-            self.model = self.config["ai_model"]
+            if base_url:
+                self.client = OpenAI(base_url=base_url, api_key=api_key)
+            else:
+                self.client = OpenAI(api_key=api_key)
+            self.model = self.config["api_model"]
         except (ValueError, TypeError) as e:
-            logging.error(f"OpenAI client initialization failed: {e}")
+            logging.error(f"AI client initialization failed: {e}")
             console.print(Panel(
-                f"[red]OpenAI client initialization failed: {e}[/]\n"
-                "Verify OPENAI_API_KEY is valid.",
+                f"[red]AI client initialization failed: {e}[/]\n"
+                f"Verify {env_var_name} is valid.",
                 title="AI Setup Error"
             ))
             sys.exit(1)
