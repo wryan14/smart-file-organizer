@@ -129,17 +129,23 @@ class SmartOrganizer:
         try:
             with open(CONFIG_PATH, "r") as f:
                 config = json.load(f)
-                # Update with any new default keys
+
+                # Migrate renamed keys
                 updated = False
+                if "ai_model" in config and "api_model" not in config:
+                    config["api_model"] = config.pop("ai_model")
+                    updated = True
+
+                # Add any new default keys
                 for key, value in DEFAULT_CONFIG.items():
                     if key not in config:
                         config[key] = value
                         updated = True
-                
+
                 if updated:
                     with open(CONFIG_PATH, "w") as f:
                         json.dump(config, f, indent=2)
-                
+
                 return config
         except json.JSONDecodeError as e:
             logging.warning(f"Invalid JSON in config file: {e}, using defaults")

@@ -62,38 +62,15 @@ Settings are stored in `~/.smart_organizer/config.json`:
 
 ### Model Examples
 
-```json
-{
-  "api_model": "openai/gpt-4o"
-}
-```
-
-```json
-{
-  "api_model": "anthropic/claude-sonnet-4"
-}
-```
-
-```json
-{
-  "api_model": "google/gemini-2.0-flash-exp"
-}
-```
+| Provider | api_model value |
+|----------|-----------------|
+| OpenAI | `openai/gpt-4o` |
+| Anthropic | `anthropic/claude-sonnet-4` |
+| Google | `google/gemini-2.0-flash-exp` |
 
 See [openrouter.ai/models](https://openrouter.ai/models) for available models.
 
-### Using OpenAI Directly
-
-To bypass OpenRouter and use OpenAI directly:
-
-```json
-{
-  "api_provider": "openai",
-  "api_model": "gpt-4o"
-}
-```
-
-Set `OPENAI_API_KEY` in your `.env` file instead of `OPENROUTER_API_KEY`.
+To use OpenAI directly (bypassing OpenRouter), set `api_provider` to `openai` and use `OPENAI_API_KEY` instead.
 
 ## Limitations
 

@@ -10,9 +10,10 @@ if (-not (Test-Path $installDir)) {
     New-Item -ItemType Directory -Path $installDir | Out-Null
 }
 
-# Copy the Python script
+# Copy the Python script and requirements
 Write-Host "Installing Smart Organizer..." -ForegroundColor Cyan
 Copy-Item "$scriptDir\smart_organizer.py" -Destination "$installDir\smart_organizer.py" -Force
+Copy-Item "$scriptDir\requirements.txt" -Destination "$installDir\requirements.txt" -Force
 
 # Copy the batch files
 Copy-Item "$scriptDir\process_file.bat" -Destination "$installDir\process_file.bat" -Force
@@ -54,9 +55,9 @@ try {
     if ($pythonVersion -match "Python (3\.\d+)") {
         Write-Host "Python $($matches[1]) is installed." -ForegroundColor Green
         
-        # Install required packages
+        # Install required packages from requirements.txt
         Write-Host "Installing required packages..." -ForegroundColor Cyan
-        python -m pip install -q rich openai python-dotenv
+        python -m pip install -q -r "$installDir\requirements.txt"
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Required packages installed successfully." -ForegroundColor Green
@@ -72,17 +73,18 @@ try {
     Write-Host "Please install Python 3.6 or higher from https://www.python.org/" -ForegroundColor Yellow
 }
 
-# Create environment file for OpenAI API key
+# Create environment file for API key
 $envPath = "$installDir\.env"
 if (-not (Test-Path $envPath)) {
     Write-Host "`nSetting up API key..." -ForegroundColor Cyan
-    $apiKey = Read-Host "Enter your OpenAI API key (or press Enter to skip)"
-    
+    Write-Host "Get an API key at https://openrouter.ai/" -ForegroundColor Cyan
+    $apiKey = Read-Host "Enter your OpenRouter API key (or press Enter to skip)"
+
     if ($apiKey) {
-        "OPENAI_API_KEY=$apiKey" | Out-File -FilePath $envPath
+        "OPENROUTER_API_KEY=$apiKey" | Out-File -FilePath $envPath
         Write-Host "API key saved to $envPath" -ForegroundColor Green
     } else {
-        Write-Host "Skipped API key setup. You'll need to set OPENAI_API_KEY later." -ForegroundColor Yellow
+        Write-Host "Skipped API key setup. You'll need to set OPENROUTER_API_KEY later." -ForegroundColor Yellow
     }
 }
 
