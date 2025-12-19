@@ -22,12 +22,6 @@ OPENROUTER_API_KEY=your_api_key_here
 
 Get an API key at [openrouter.ai](https://openrouter.ai/). OpenRouter provides access to models from OpenAI, Anthropic, Google, Meta, and others through a single API.
 
-Windows users can run the automated installer, which creates desktop shortcuts and handles dependency installation:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File Install-SmartOrganizer.ps1
-```
-
 ## Usage
 
 Run without arguments for interactive mode:
