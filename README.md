@@ -1,184 +1,80 @@
 # Smart Organizer
 
-> AI-powered file organization with a human touch
+A command-line file organization tool that uses AI to suggest standardized filenames and directory structures. The tool operates interactively, presenting suggestions for user approval before making changes.
 
-Smart Organizer is an intelligent command-line tool that helps you bring order to your digital files through AI-assisted naming and organization, while keeping you in control of the process.
+## Requirements
 
-
-
-## 🌟 Key Features
-
-- **AI-Powered Naming**: Generate consistent, meaningful filenames based on content and purpose
-- **Intelligent Directory Suggestions**: Get smart recommendations for where files should live
-- **Human-in-the-Loop Control**: You approve and refine all suggestions before changes happen
-- **Batch Processing**: Handle multiple files efficiently in a single session
-- **Operation Logging**: Keep track of all file management activities
-- **Interactive CLI**: Beautiful command-line interface with rich formatting
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.6+
+- Python 3.8+
+- Dependencies: see `requirements.txt`
 - OpenAI API key
 
-### Installation
+## Setup
 
-**Windows (Automated)**:
+```bash
+pip install -r requirements.txt
+```
+
+Create a `.env` file with your API key:
+
+```
+OPENAI_API_KEY=your_api_key_here
+```
+
+**Windows (Automated):**
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File Install-SmartOrganizer.ps1
 ```
 
-**Manual (All Platforms)**:
+## Usage
+
+**Interactive mode:**
+
 ```bash
-# 1. Install required packages
-pip install rich openai python-dotenv
-
-# 2. Set your OpenAI API key in a .env file
-echo "OPENAI_API_KEY=your_api_key_here" > .env
-
-# 3. Run the script
 python smart_organizer.py
 ```
 
-## 💡 Common Workflows
-
-### Workflow 1: Organizing Individual Files
-
-Ideal for handling important documents that need careful organization:
+**Command-line mode:**
 
 ```bash
-python smart_organizer.py file /path/to/quarterly_report.pdf
+python smart_organizer.py file <path>    # Process a single file
+python smart_organizer.py dir <path>     # Process a directory
+python smart_organizer.py batch          # Batch processing mode
+python smart_organizer.py log            # View operation log
+python smart_organizer.py dirs           # Manage directory registry
+python smart_organizer.py config         # Configure settings
+python smart_organizer.py help           # Display help
 ```
 
-1. The tool shows you a preview of the file content
-2. You provide a brief description (e.g., "Q2 financial report with performance metrics")
-3. AI suggests a standardized name (e.g., "2025-03-finance_quarterly-report_q2.pdf")
-4. AI recommends an appropriate directory based on your existing structure
-5. You approve or modify each suggestion
-6. The file is renamed and moved
+## Configuration
 
-### Workflow 2: Cleaning Up a Directory
+Settings are stored in `~/.smart_organizer/config.json`:
 
-Perfect for organizing folders with mixed content:
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `default_base_dir` | Base directory for organized files | `~/Cleanup` |
+| `ai_model` | OpenAI model to use | `gpt-4o` |
+| `min_confidence_threshold` | Minimum AI confidence for auto-suggestions | `0.7` |
+| `default_filename_pattern` | Pattern for renamed files | `{year}-{month}-{category}_{descriptor}_{context}` |
+| `default_directory_pattern` | Pattern for new directories | `{category}` |
 
-```bash
-python smart_organizer.py dir /path/to/messy_downloads
-```
+## Naming Patterns
 
-1. The tool analyzes the directory content
-2. You provide a description of the directory's purpose
-3. AI suggests a standardized name for the directory
-4. You can choose to process all files within the directory:
-   - With the same description (batch mode)
-   - Individually with custom descriptions
+**Files:** `{year}-{month}-{category}_{descriptor}_{context}.ext`
 
-### Workflow 3: Batch Processing Similar Files
+Example: `2025-03-finance_quarterly-report_q2.pdf`
 
-Efficient for handling multiple related files:
+**Directories:** `{category}`
 
-```bash
-python smart_organizer.py batch
-```
+Example: `FinancialReports`
 
-1. Add multiple files to the processing queue
-2. Provide descriptions for each
-3. Process all files at once
-4. Review AI suggestions for each file
-5. Apply changes in bulk
+## Limitations
 
-## 📋 File Naming Patterns
+- Requires active internet connection for AI features
+- API usage incurs OpenAI costs
+- Large files (>1MB) cannot be previewed
+- Binary files show extension only, no content preview
 
-Smart Organizer uses consistent naming patterns:
+## License
 
-**Files**: `{year}-{month}-{category}_{descriptor}_{context}.ext`
-- Example: `2025-03-project_website-redesign_homepage.psd`
-
-**Directories**: `{year}-{month}-{category}_{purpose}`
-- Example: `2025-03-marketing_social-media-campaign`
-
-*These patterns can be customized in the configuration.*
-
-## 🔍 Command Reference
-
-```
-smart_organizer file <path>     Process a single file
-smart_organizer dir <path>      Process a directory
-smart_organizer batch           Batch processing mode
-smart_organizer log             View operation log
-smart_organizer dirs            Manage directory registry
-smart_organizer config          Configure settings
-smart_organizer help            Display help
-```
-
-## ⚙️ Advanced Usage
-
-### Managing Your Directory Registry
-
-Smart Organizer maintains a registry of known directories to help with organization:
-
-```bash
-python smart_organizer.py dirs
-```
-
-This allows you to:
-- View all registered directories
-- Add new directories to the registry
-- Update directory information
-- Remove directories from the registry
-
-### Quick Deletion
-
-To quickly delete a file or directory:
-1. When prompted for a description, type `del`
-2. Confirm the deletion
-
-### Customizing Configuration
-
-Adjust settings to match your workflow:
-
-```bash
-python smart_organizer.py config
-```
-
-Configurable options include:
-- Base directory for new folders
-- Filename and directory patterns
-- AI model selection
-- Confidence thresholds
-
-## 📝 Tips for Effective Use
-
-1. **Be Descriptive**: Provide detailed descriptions for better AI suggestions
-2. **Use Batch Mode**: Process similar files together for efficiency
-3. **Maintain Your Registry**: Keep your directory registry well-organized
-4. **Review the Log**: Check the operation log to track changes
-5. **Customize Patterns**: Adjust the default patterns to match your organization style
-
-## 🔧 Troubleshooting
-
-**API Key Issues**
-- Ensure your OpenAI API key is correctly set in your `.env` file
-- Verify you have sufficient API credits
-
-**File Permission Errors**
-- Check that you have write permissions for the directories
-- Run as administrator if needed for system files
-
-**Improving AI Suggestions**
-- Provide more detailed descriptions
-- Adjust the AI model in configuration settings
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+CC0 1.0 - see LICENSE

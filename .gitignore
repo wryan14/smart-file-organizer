@@ -169,3 +169,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Audit files
+architecture-review.md
+plan.md
+questions.md

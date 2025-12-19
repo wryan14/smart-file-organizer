@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-# smart_organizer.py - An AI-powered file and directory management utility
+"""AI-powered file and directory organization utility.
+
+Provides interactive CLI for renaming files and directories using
+AI-generated suggestions, organizing files into categorized directories,
+and maintaining an operation log for all changes.
+"""
 
 import sys
 import os
@@ -55,8 +60,15 @@ DEFAULT_CONFIG = {
 
 
 class SmartOrganizer:
+    """Interactive file organization tool with AI-powered naming suggestions.
+
+    Manages file and directory renaming, organization into categorized
+    directories, and maintains a registry of known directories for
+    intelligent placement suggestions.
+    """
+
     def __init__(self):
-        """Initialize the SmartOrganizer with configuration and AI client."""
+        """Initialize configuration, directory registry, and AI client."""
         self.config = self._load_config()
         self._ensure_directory_registry()
         self._setup_ai_client()
@@ -85,8 +97,11 @@ class SmartOrganizer:
                         json.dump(config, f, indent=2)
                 
                 return config
-        except Exception as e:
-            console.print(f"[red]Error loading config: {e}. Using defaults.[/]")
+        except json.JSONDecodeError as e:
+            logging.warning(f"Invalid JSON in config file: {e}, using defaults")
+            return DEFAULT_CONFIG
+        except PermissionError as e:
+            logging.warning(f"Cannot read config file: {e}, using defaults")
             return DEFAULT_CONFIG
 
     def _ensure_directory_registry(self):
@@ -140,45 +155,55 @@ class SmartOrganizer:
         self._save_directory_registry(directories)
     
     def _setup_ai_client(self):
-        """Set up the OpenAI client."""
+        """Set up the OpenAI client.
+
+        Raises:
+            SystemExit: When API key is missing or client initialization fails
+        """
         load_dotenv()
         api_key = os.getenv("OPENAI_API_KEY")
-        
+
         if not api_key:
+            logging.error("OPENAI_API_KEY not found in environment or .env file")
             console.print(Panel(
-                "[red]Error: OPENAI_API_KEY not found in environment or .env file.[/]\n"
-                "Please set your OpenAI API key to use the AI features.",
+                "[red]OPENAI_API_KEY not found in environment or .env file.[/]\n"
+                "Set your OpenAI API key to use AI features.",
                 title="API Key Error"
             ))
             sys.exit(1)
-            
+
         try:
             self.client = OpenAI()
             self.model = self.config["ai_model"]
-        except Exception as e:
+        except (ValueError, TypeError) as e:
+            logging.error(f"OpenAI client initialization failed: {e}")
             console.print(Panel(
-                f"[red]Error setting up OpenAI client: {e}[/]\n"
-                f"Make sure OPENAI_API_KEY is set in your environment or .env file.",
+                f"[red]OpenAI client initialization failed: {e}[/]\n"
+                "Verify OPENAI_API_KEY is valid.",
                 title="AI Setup Error"
             ))
             sys.exit(1)
 
-    def _get_ai_completion(self, prompt: str, messages=None, **kwargs) -> str:
-        """Get completion from the AI model."""
+    def _get_ai_completion(self, prompt: str, messages=None, **kwargs) -> Optional[str]:
+        """Get completion from the AI model.
+
+        Returns:
+            AI response string, or None if request fails
+        """
         try:
             if messages is None:
                 messages = [{"role": "system", "content": prompt}]
-                
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.2
             )
-            
+
             return response.choices[0].message.content.strip()
         except Exception as e:
-            console.print(f"[red]Error getting AI completion: {e}[/]")
-            return ""
+            logging.error(f"AI completion request failed: {e}")
+            return None
             
     def _batch_add_request(self, file_path: Path, description: str, operation_type: str):
         """Add a request to the batch processing queue."""
@@ -1018,7 +1043,7 @@ Return ONLY the directory name as a single PascalCase word or PascalCase compoun
         subdir_count = sum(1 for _ in path.glob("*") if _.is_dir())
         file_list = list(path.glob("*"))[:10]  # First 10 files/dirs
         
-        file_list_str = "\n".join(f"- {'📁' if f.is_dir() else '📄'} {f.name}" for f in file_list)
+        file_list_str = "\n".join(f"- [dir] {f.name}" if f.is_dir() else f"- {f.name}" for f in file_list)
         if len(list(path.glob("*"))) > 10:
             file_list_str += "\n- ..."
         
