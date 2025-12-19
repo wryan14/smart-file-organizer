@@ -13,7 +13,7 @@ import json
 import shutil
 import datetime
 import logging
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, NamedTuple, Optional, Union
 import re
 
 # Rich for beautiful CLI
@@ -45,6 +45,50 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+# Prompt templates (single source of truth for naming conventions)
+FILENAME_PROMPT_TEMPLATE = """Given a file and description, generate a structured filename.
+Format: {pattern}
+
+Where:
+- {{year}}-{{month}} should be the current date ({year_month}) unless a specific date is mentioned
+- {{category}} is a single word representing the domain (e.g., finance, research, project)
+- {{descriptor}} is 2-3 words joined by hyphens that capture the main topic
+- {{context}} is 1-2 key identifying words
+
+Guidelines:
+- The filename should be meaningful and describe the content
+- Use kebab-case (hyphens) within descriptor and context
+- Use underscores between pattern elements
+- Preserve significant identifiers from original filename
+- Use lowercase except for proper nouns
+- Do not include the file extension
+
+Original: {original}
+Description: {description}
+
+Return ONLY the filename in the exact format: {{year}}-{{month}}-{{category}}_{{descriptor}}_{{context}}"""
+
+DIRNAME_PROMPT_TEMPLATE = """Given a directory and description, generate a simple, categorical directory name.
+Format: {pattern}
+
+Guidelines:
+- The directory name should be a simple, clear category (e.g., Documents, ProjectFiles, FinancialReports)
+- Use PascalCase (capitalize each word, no spaces)
+- Keep the name concise but descriptive (typically 1-2 words)
+- The name should be broad enough to group similar files, not overly specific
+
+Original: {original}
+Description: {description}
+
+Return ONLY the directory name as a single PascalCase word or PascalCase compound word."""
+
+
+class DirectorySuggestion(NamedTuple):
+    """Result of directory suggestion for file organization."""
+    path: Path
+    is_new: bool
+
+
 # Default configuration
 DEFAULT_CONFIG = {
     "max_preview_lines": 10,
@@ -53,7 +97,6 @@ DEFAULT_CONFIG = {
     "default_base_dir": str(Path.home() / "Cleanup"),
     "ai_model": "gpt-4o",
     "skip_confirm_for_move": False,
-    # "default_directory_pattern": "{year}-{month}-{category}_{purpose}",
     "default_directory_pattern": "{category}",
     "default_filename_pattern": "{year}-{month}-{category}_{descriptor}_{context}",
 }
@@ -328,80 +371,49 @@ class SmartOrganizer:
             console.print(f"[yellow]Warning: Could not write to log file: {e}[/]")
             logging.error(f"Failed to write to log file: {e}")
 
-    def _get_standardized_filename(self, original_name: str, description: str) -> str:
-        """Use AI to generate a standardized filename."""
-        # Handle the delete keyword
+    def _get_standardized_filename(self, original_name: str, description: str) -> Optional[str]:
+        """Use AI to generate a standardized filename.
+
+        Returns:
+            Standardized filename, "DELETE" if deletion requested, or None on error
+        """
         if description.strip().lower() == "del":
             return "DELETE"
-        
-        # Otherwise, ask AI for a standardized name
+
         year_month = datetime.datetime.now().strftime("%Y-%m")
-        
-        prompt = f"""Given a file and description, generate a structured filename.
-Format: {self.config["default_filename_pattern"]}
+        prompt = FILENAME_PROMPT_TEMPLATE.format(
+            pattern=self.config["default_filename_pattern"],
+            year_month=year_month,
+            original=original_name,
+            description=description
+        )
 
-Where:
-- {{year}}-{{month}} should be the current date ({year_month}) unless a specific date is mentioned
-- {{category}} is a single word representing the domain (e.g., finance, research, project)
-- {{descriptor}} is 2-3 words joined by hyphens that capture the main topic
-- {{context}} is 1-2 key identifying words
+        result = self._get_ai_completion(prompt)
+        if result and result != "DELETE":
+            original_ext = Path(original_name).suffix
+            if original_ext and not result.endswith(original_ext):
+                result += original_ext
 
-Guidelines:
-- The filename should be meaningful and describe the content
-- Use kebab-case (hyphens) within descriptor and context
-- Use underscores between pattern elements
-- Preserve significant identifiers from original filename
-- Use lowercase except for proper nouns
-- Do not include the file extension
+        return result
 
-Original: {original_name}
-Description: {description}
+    def _get_standardized_dirname(self, original_path: Path, description: str) -> Optional[str]:
+        """Use AI to generate a standardized directory name.
 
-Return ONLY the filename in the exact format: {{year}}-{{month}}-{{category}}_{{descriptor}}_{{context}}"""
-
-        try:
-            result = self._get_ai_completion(prompt)
-            
-            # If successful, add the original extension
-            if result and result != "DELETE":
-                original_ext = Path(original_name).suffix
-                if original_ext and not result.endswith(original_ext):
-                    result += original_ext
-            
-            return result
-        except Exception as e:
-            console.print(f"[red]Error getting standardized filename: {e}[/]")
-            return ""
-
-    def _get_standardized_dirname(self, original_path: Path, description: str) -> str:
-        """Use AI to generate a standardized directory name."""
-        # Handle the delete keyword
+        Returns:
+            Standardized directory name, "DELETE" if deletion requested, or None on error
+        """
         if description.strip().lower() == "del":
             return "DELETE"
-        
-        # Otherwise, ask AI for a standardized name
-        prompt = f"""Given a directory and description, generate a simple, categorical directory name.
-    Format: {{Category}}
 
-    Guidelines:
-    - The directory name should be a simple, clear category (e.g., "Documents", "ProjectFiles", "FinancialReports")
-    - Use PascalCase (capitalize each word, no spaces)
-    - Keep the name concise but descriptive (typically 1-2 words)
-    - The name should be broad enough to group similar files, not overly specific
+        prompt = DIRNAME_PROMPT_TEMPLATE.format(
+            pattern=self.config["default_directory_pattern"],
+            original=original_path.name,
+            description=description
+        )
 
-    Original Directory: {original_path.name}
-    Description: {description}
+        return self._get_ai_completion(prompt)
 
-    Return ONLY the directory name as a single PascalCase word or PascalCase compound word."""
-
-        try:
-            result = self._get_ai_completion(prompt)
-            return result
-        except Exception as e:
-            console.print(f"[red]Error getting standardized directory name: {e}[/]")
-            return ""
-
-    def _suggest_target_directory(self, file_path: Path, new_name: str, description: str) -> Tuple[Path, bool]:
+    def _suggest_target_directory(self, file_path: Path, new_name: str, description: str) -> DirectorySuggestion:
         """Suggest a target directory for the file based on existing directories."""
         # Get all registered directories
         directories = self._load_directory_registry()
@@ -481,16 +493,16 @@ NEW_DIRECTORY_SUGGESTION: [if recommending a new directory, suggest a name in th
                     title="Directory Suggestion"
                 ))
                 
-                return target_dir, False
+                return DirectorySuggestion(target_dir, False)
             else:
                 # Suggest creating a new directory
                 return self._suggest_new_directory(file_path, new_name, description, suggested_name=new_directory)
                 
         except Exception as e:
             console.print(f"[red]Error suggesting target directory: {e}[/]")
-            return file_path.parent, False
+            return DirectorySuggestion(file_path.parent, False)
 
-    def _suggest_new_directory(self, file_path: Path, new_name: str, description: str, suggested_name=None) -> Tuple[Path, bool]:
+    def _suggest_new_directory(self, file_path: Path, new_name: str, description: str, suggested_name=None) -> DirectorySuggestion:
         """Suggest creating a new directory."""
         base_dir = Path(self.config["default_base_dir"])
         
@@ -541,7 +553,7 @@ Keep it short (1-2 sentences). Focus on organization benefits."""
             title="New Directory Suggestion"
         ))
         
-        return base_dir / suggested_name, True
+        return DirectorySuggestion(base_dir / suggested_name, True)
 
     def process_batch(self):
         """Process all queued batch requests at once."""
