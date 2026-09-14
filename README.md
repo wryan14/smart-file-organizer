@@ -1,3 +1,5 @@
+> **Historical project (2025).** This experiment explored AI-assisted file organization with human confirmation. It is no longer maintained and is retained for reference.
+
 # Smart Organizer
 
 Uses AI to generate standardized filenames and organize files into categorized directories based on user-provided descriptions. Operates interactively, presenting suggestions for approval before making changes. Maintains a registry of known directories to suggest appropriate placement for new files.
